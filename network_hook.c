@@ -174,6 +174,9 @@ int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
            on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
            on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
            on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
+        } else {
+            fprintf(stderr, "koala_libc.so load $KOALA_SO failed: %s\n", getenv("KOALA_SO"));
+            fflush(stderr);
         }
     }
     if (on_accept_func != NULL && clientSocketFD > 0 && addr->sa_family == AF_INET) {
