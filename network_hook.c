@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include "span.h"
 
 #define RTLD_NEXT	((void *) -1l)
@@ -108,11 +109,15 @@ ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
 ssize_t write(int socketFD, const void *buffer, size_t size) {
     ssize_t sent_size = orig_write_func(socketFD, buffer, size);
     if (on_send_func != NULL && sent_size >= 0) {
-        struct ch_span span;
-        span.Ptr = buffer;
-        span.Len = sent_size;
-        pid_t thread_id = syscall(__NR_gettid);
-        on_send_func(thread_id, socketFD, span, 0);
+        struct stat statbuf;
+        fstat(socketFD, &statbuf);
+        if (S_ISSOCK(statbuf.st_mode)) {
+            struct ch_span span;
+            span.Ptr = buffer;
+            span.Len = sent_size;
+            pid_t thread_id = syscall(__NR_gettid);
+            on_send_func(thread_id, socketFD, span, 0);
+        }
     }
     return sent_size;
 }
@@ -132,11 +137,15 @@ ssize_t recv (int socketFD, void *buffer, size_t size, int flags) {
 ssize_t read (int socketFD, void *buffer, size_t size) {
     ssize_t received_size = orig_read_func(socketFD, buffer, size);
     if (on_recv_func != NULL && received_size >= 0) {
-        struct ch_span span;
-        span.Ptr = buffer;
-        span.Len = received_size;
-        pid_t thread_id = syscall(__NR_gettid);
-        on_recv_func(thread_id, socketFD, span, 0);
+        struct stat statbuf;
+        fstat(socketFD, &statbuf);
+        if (S_ISSOCK(statbuf.st_mode)) {
+            struct ch_span span;
+            span.Ptr = buffer;
+            span.Len = received_size;
+            pid_t thread_id = syscall(__NR_gettid);
+            on_recv_func(thread_id, socketFD, span, 0);
+        }
     }
     return received_size;
 }
@@ -163,22 +172,33 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
     return orig_connect_func(socketFD, remote_addr, remote_addr_len);
 }
 
+void load_koala_so() {
+    if (koala_so_handle != NULL) {
+        return;
+    }
+    char *koala_so_path = getenv("KOALA_SO");
+    if (koala_so_path == NULL) {
+        fprintf(stderr, "koala_libc.so find $KOALA_SO environment variable not set");
+        fflush(stderr);
+        return;
+    }
+    koala_so_handle = dlopen(koala_so_path, RTLD_LAZY);
+    if (koala_so_handle == NULL) {
+        fprintf(stderr, "koala_libc.so load $KOALA_SO failed: %s\n", koala_so_path);
+        fflush(stderr);
+        return;
+    }
+    on_accept_func = (on_accept_pfn_t) dlsym(koala_so_handle, "on_accept");
+    on_connect_func = (on_connect_pfn_t) dlsym(koala_so_handle, "on_connect");
+    on_bind_func = (on_bind_pfn_t) dlsym(koala_so_handle, "on_bind");
+    on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
+    on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
+    on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
+}
+
 int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
     int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
-    if (koala_so_handle == NULL) {
-        koala_so_handle = dlopen(getenv("KOALA_SO"), RTLD_LAZY);
-        if (koala_so_handle != NULL) {
-           on_accept_func = (on_accept_pfn_t) dlsym(koala_so_handle, "on_accept");
-           on_connect_func = (on_connect_pfn_t) dlsym(koala_so_handle, "on_connect");
-           on_bind_func = (on_bind_pfn_t) dlsym(koala_so_handle, "on_bind");
-           on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
-           on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
-           on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
-        } else {
-            fprintf(stderr, "koala_libc.so load $KOALA_SO failed: %s\n", getenv("KOALA_SO"));
-            fflush(stderr);
-        }
-    }
+    load_koala_so();
     if (on_accept_func != NULL && clientSocketFD > 0 && addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
         pid_t thread_id = syscall(__NR_gettid);
