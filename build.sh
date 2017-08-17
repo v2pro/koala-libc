@@ -1,0 +1,1 @@
+gcc -shared -fPIC network_hook.c -o koala-libc.so
