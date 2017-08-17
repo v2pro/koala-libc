@@ -17,6 +17,8 @@
 #include <sys/stat.h>
 #include "span.h"
 
+char* library_version = { "Version: 1.0.0" };
+
 #define RTLD_NEXT	((void *) -1l)
 
 #define HOOK_SYS_FUNC(name) if( !orig_##name##_func ) { orig_##name##_func = (name##_pfn_t)dlsym(RTLD_NEXT,#name); }
