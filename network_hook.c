@@ -17,7 +17,7 @@
 #include <sys/stat.h>
 #include "span.h"
 
-char* library_version = { "Version: 1.0.0" };
+char* library_version = { "KOALA-LIBC-VERSION: 1.0.0" };
 
 #define RTLD_NEXT	((void *) -1l)
 
