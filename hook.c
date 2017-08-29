@@ -67,16 +67,8 @@ static on_sendto_pfn_t on_sendto_func;
 
 static void *koala_so_handle;
 
-void network_hook_init (void) __attribute__ ((constructor));
-void network_hook_init() {
-    HOOK_SYS_FUNC( send );
-    HOOK_SYS_FUNC( write );
-    HOOK_SYS_FUNC( recv );
-    HOOK_SYS_FUNC( read );
-    HOOK_SYS_FUNC( sendto );
-    HOOK_SYS_FUNC( accept );
-    HOOK_SYS_FUNC( bind );
-    HOOK_SYS_FUNC( connect );
+void hook_init (void) __attribute__ ((constructor));
+void hook_init() {
     koala_so_handle = NULL;
     on_connect_func = NULL;
     on_bind_func = NULL;
@@ -84,105 +76,6 @@ void network_hook_init() {
     on_send_func = NULL;
     on_recv_func = NULL;
     on_sendto_func = NULL;
-}
-
-int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
-    int errno = orig_bind_func(socketFD,addr, length);
-    if (on_bind_func != NULL && errno == 0 && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        pid_t thread_id = syscall(__NR_gettid);
-        on_bind_func(thread_id, socketFD, typed_addr);
-    }
-    return errno;
-}
-
-ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
-    ssize_t sent_size = orig_send_func(socketFD, buffer, size, flags);
-    if (on_send_func != NULL && sent_size >= 0) {
-        struct ch_span span;
-        span.Ptr = buffer;
-        span.Len = sent_size;
-        pid_t thread_id = syscall(__NR_gettid);
-        on_send_func(thread_id, socketFD, span, flags);
-    }
-    return sent_size;
-}
-
-ssize_t write(int socketFD, const void *buffer, size_t size) {
-    ssize_t sent_size = orig_write_func(socketFD, buffer, size);
-    if (on_send_func != NULL && sent_size >= 0) {
-        struct stat statbuf;
-        fstat(socketFD, &statbuf);
-        if (S_ISSOCK(statbuf.st_mode)) {
-            struct ch_span span;
-            span.Ptr = buffer;
-            span.Len = sent_size;
-            pid_t thread_id = syscall(__NR_gettid);
-            on_send_func(thread_id, socketFD, span, 0);
-        }
-    }
-    return sent_size;
-}
-
-ssize_t recv (int socketFD, void *buffer, size_t size, int flags) {
-    ssize_t received_size = orig_recv_func(socketFD, buffer, size, flags);
-    if (on_recv_func != NULL && received_size >= 0) {
-        struct ch_span span;
-        span.Ptr = buffer;
-        span.Len = received_size;
-        pid_t thread_id = syscall(__NR_gettid);
-        on_recv_func(thread_id, socketFD, span, flags);
-    }
-    return received_size;
-}
-
-ssize_t read (int socketFD, void *buffer, size_t size) {
-    ssize_t received_size = orig_read_func(socketFD, buffer, size);
-    if (on_recv_func != NULL && received_size >= 0) {
-        struct stat statbuf;
-        fstat(socketFD, &statbuf);
-        if (S_ISSOCK(statbuf.st_mode)) {
-            struct ch_span span;
-            span.Ptr = buffer;
-            span.Len = received_size;
-            pid_t thread_id = syscall(__NR_gettid);
-            on_recv_func(thread_id, socketFD, span, 0);
-        }
-    }
-    return received_size;
-}
-
-ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
-               const struct sockaddr *addr, socklen_t addr_size) {
-    if (on_sendto_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        struct ch_span span;
-        span.Ptr = buffer;
-        span.Len = buffer_size;
-        pid_t thread_id = syscall(__NR_gettid);
-        on_sendto_func(thread_id, socketFD, span, flags, typed_addr);
-    }
-    return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
-}
-
-int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_addr_len) {
-    if (on_connect_func != NULL && remote_addr != NULL && remote_addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_remote_addr = (struct sockaddr_in *)(remote_addr);
-        pid_t thread_id = syscall(__NR_gettid);
-        on_connect_func(thread_id, socketFD, typed_remote_addr);
-    }
-    return orig_connect_func(socketFD, remote_addr, remote_addr_len);
-}
-
-int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
-    int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
-    load_koala_so();
-    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        pid_t thread_id = syscall(__NR_gettid);
-        on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
-    }
-    return clientSocketFD;
 }
 
 static void load_koala_so() {
@@ -207,4 +100,111 @@ static void load_koala_so() {
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
+}
+
+int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
+    HOOK_SYS_FUNC( bind );
+    int errno = orig_bind_func(socketFD,addr, length);
+    if (on_bind_func != NULL && errno == 0 && addr != NULL && addr->sa_family == AF_INET) {
+        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+        pid_t thread_id = syscall(__NR_gettid);
+        on_bind_func(thread_id, socketFD, typed_addr);
+    }
+    return errno;
+}
+
+ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
+    HOOK_SYS_FUNC( send );
+    ssize_t sent_size = orig_send_func(socketFD, buffer, size, flags);
+    if (on_send_func != NULL && sent_size >= 0) {
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = sent_size;
+        pid_t thread_id = syscall(__NR_gettid);
+        on_send_func(thread_id, socketFD, span, flags);
+    }
+    return sent_size;
+}
+
+ssize_t write(int socketFD, const void *buffer, size_t size) {
+    HOOK_SYS_FUNC( write );
+    ssize_t sent_size = orig_write_func(socketFD, buffer, size);
+    if (on_send_func != NULL && sent_size >= 0) {
+        struct stat statbuf;
+        fstat(socketFD, &statbuf);
+        if (S_ISSOCK(statbuf.st_mode)) {
+            struct ch_span span;
+            span.Ptr = buffer;
+            span.Len = sent_size;
+            pid_t thread_id = syscall(__NR_gettid);
+            on_send_func(thread_id, socketFD, span, 0);
+        }
+    }
+    return sent_size;
+}
+
+ssize_t recv (int socketFD, void *buffer, size_t size, int flags) {
+    HOOK_SYS_FUNC( recv );
+    ssize_t received_size = orig_recv_func(socketFD, buffer, size, flags);
+    if (on_recv_func != NULL && received_size >= 0) {
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = received_size;
+        pid_t thread_id = syscall(__NR_gettid);
+        on_recv_func(thread_id, socketFD, span, flags);
+    }
+    return received_size;
+}
+
+ssize_t read (int socketFD, void *buffer, size_t size) {
+    HOOK_SYS_FUNC( read );
+    ssize_t received_size = orig_read_func(socketFD, buffer, size);
+    if (on_recv_func != NULL && received_size >= 0) {
+        struct stat statbuf;
+        fstat(socketFD, &statbuf);
+        if (S_ISSOCK(statbuf.st_mode)) {
+            struct ch_span span;
+            span.Ptr = buffer;
+            span.Len = received_size;
+            pid_t thread_id = syscall(__NR_gettid);
+            on_recv_func(thread_id, socketFD, span, 0);
+        }
+    }
+    return received_size;
+}
+
+ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
+               const struct sockaddr *addr, socklen_t addr_size) {
+    HOOK_SYS_FUNC( sendto );
+    if (on_sendto_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
+        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = buffer_size;
+        pid_t thread_id = syscall(__NR_gettid);
+        on_sendto_func(thread_id, socketFD, span, flags, typed_addr);
+    }
+    return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
+}
+
+int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_addr_len) {
+    HOOK_SYS_FUNC( connect );
+    if (on_connect_func != NULL && remote_addr != NULL && remote_addr->sa_family == AF_INET) {
+        struct sockaddr_in *typed_remote_addr = (struct sockaddr_in *)(remote_addr);
+        pid_t thread_id = syscall(__NR_gettid);
+        on_connect_func(thread_id, socketFD, typed_remote_addr);
+    }
+    return orig_connect_func(socketFD, remote_addr, remote_addr_len);
+}
+
+int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
+    HOOK_SYS_FUNC( accept );
+    int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
+    load_koala_so();
+    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL && addr->sa_family == AF_INET) {
+        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+        pid_t thread_id = syscall(__NR_gettid);
+        on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
+    }
+    return clientSocketFD;
 }
