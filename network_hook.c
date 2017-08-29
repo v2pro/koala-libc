@@ -17,7 +17,7 @@
 #include <sys/stat.h>
 #include "span.h"
 
-char* library_version = { "KOALA-LIBC-VERSION: 1.0.0" };
+char* library_version = { "KOALA-LIBC-VERSION: 1.1.0" };
 
 #define RTLD_NEXT	((void *) -1l)
 
@@ -74,9 +74,9 @@ void network_hook_init() {
     HOOK_SYS_FUNC( recv );
     HOOK_SYS_FUNC( read );
     HOOK_SYS_FUNC( sendto );
-    HOOK_SYS_FUNC( connect );
     HOOK_SYS_FUNC( accept );
     HOOK_SYS_FUNC( bind );
+    HOOK_SYS_FUNC( connect );
     koala_so_handle = NULL;
     on_connect_func = NULL;
     on_bind_func = NULL;
@@ -88,7 +88,7 @@ void network_hook_init() {
 
 int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
     int errno = orig_bind_func(socketFD,addr, length);
-    if (on_bind_func != NULL && errno == 0 && addr->sa_family == AF_INET) {
+    if (on_bind_func != NULL && errno == 0 && addr != NULL && addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
         pid_t thread_id = syscall(__NR_gettid);
         on_bind_func(thread_id, socketFD, typed_addr);
@@ -154,7 +154,7 @@ ssize_t read (int socketFD, void *buffer, size_t size) {
 
 ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
                const struct sockaddr *addr, socklen_t addr_size) {
-    if (on_sendto_func != NULL && addr->sa_family == AF_INET) {
+    if (on_sendto_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
         struct ch_span span;
         span.Ptr = buffer;
@@ -166,7 +166,7 @@ ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
 }
 
 int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_addr_len) {
-    if (on_connect_func != NULL && remote_addr->sa_family == AF_INET) {
+    if (on_connect_func != NULL && remote_addr != NULL && remote_addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_remote_addr = (struct sockaddr_in *)(remote_addr);
         pid_t thread_id = syscall(__NR_gettid);
         on_connect_func(thread_id, socketFD, typed_remote_addr);
@@ -174,7 +174,18 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
     return orig_connect_func(socketFD, remote_addr, remote_addr_len);
 }
 
-void load_koala_so() {
+int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
+    int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
+    load_koala_so();
+    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL && addr->sa_family == AF_INET) {
+        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+        pid_t thread_id = syscall(__NR_gettid);
+        on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
+    }
+    return clientSocketFD;
+}
+
+static void load_koala_so() {
     if (koala_so_handle != NULL) {
         return;
     }
@@ -196,15 +207,4 @@ void load_koala_so() {
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
-}
-
-int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
-    int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
-    load_koala_so();
-    if (on_accept_func != NULL && clientSocketFD > 0 && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        pid_t thread_id = syscall(__NR_gettid);
-        on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
-    }
-    return clientSocketFD;
 }
