@@ -47,6 +47,18 @@ static accept_pfn_t orig_accept_func;
 typedef int (*bind_pfn_t)(int, const struct sockaddr *, socklen_t);
 static bind_pfn_t orig_bind_func;
 
+typedef FILE * (*fopen_pfn_t)(const char *filename, const char *opentype);
+static fopen_pfn_t orig_fopen_func;
+
+typedef FILE * (*fopen64_pfn_t)(const char *filename, const char *opentype);
+static fopen64_pfn_t orig_fopen64_func;
+
+typedef int (*open_pfn_t)(const char *filename, int flags, mode_t mode);
+static open_pfn_t orig_open_func;
+
+typedef int (*open64_pfn_t)(const char *filename, int flags, mode_t mode);
+static open64_pfn_t orig_open64_func;
+
 typedef void (*on_connect_pfn_t)(pid_t p0, int p1, struct sockaddr_in* p2);
 static on_connect_pfn_t on_connect_func;
 
@@ -65,6 +77,15 @@ static on_recv_pfn_t on_recv_func;
 typedef void (*on_sendto_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, struct sockaddr_in* p4);
 static on_sendto_pfn_t on_sendto_func;
 
+typedef void (*on_opened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, mode_t p4);
+static on_opened_file_pfn_t on_opened_file_func;
+
+typedef void (*on_fopened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, struct ch_span p3);
+static on_fopened_file_pfn_t on_fopened_file_func;
+
+typedef void (*on_write_pfn_t)(pid_t p0, int p1, struct ch_span p2);
+static on_write_pfn_t on_write_func;
+
 static void *koala_so_handle;
 
 void hook_init (void) __attribute__ ((constructor));
@@ -76,6 +97,13 @@ void hook_init() {
     on_send_func = NULL;
     on_recv_func = NULL;
     on_sendto_func = NULL;
+    on_opened_file_func = NULL;
+    on_fopened_file_func = NULL;
+    on_write_func = NULL;
+}
+
+pid_t get_thread_id() {
+    return syscall(__NR_gettid);
 }
 
 static void load_koala_so() {
@@ -100,6 +128,9 @@ static void load_koala_so() {
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
+    on_opened_file_func = (on_opened_file_pfn_t) dlsym(koala_so_handle, "on_opened_file");
+    on_fopened_file_func = (on_fopened_file_pfn_t) dlsym(koala_so_handle, "on_fopened_file");
+    on_write_func = (on_write_pfn_t) dlsym(koala_so_handle, "on_write");
 }
 
 int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
@@ -107,7 +138,7 @@ int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
     int errno = orig_bind_func(socketFD,addr, length);
     if (on_bind_func != NULL && errno == 0 && addr != NULL && addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_bind_func(thread_id, socketFD, typed_addr);
     }
     return errno;
@@ -120,7 +151,7 @@ ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = sent_size;
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_send_func(thread_id, socketFD, span, flags);
     }
     return sent_size;
@@ -129,15 +160,17 @@ ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
 ssize_t write(int socketFD, const void *buffer, size_t size) {
     HOOK_SYS_FUNC( write );
     ssize_t sent_size = orig_write_func(socketFD, buffer, size);
-    if (on_send_func != NULL && sent_size >= 0) {
+    if (on_send_func != NULL && on_write_func != NULL && sent_size >= 0) {
         struct stat statbuf;
         fstat(socketFD, &statbuf);
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = sent_size;
+        pid_t thread_id = get_thread_id();
         if (S_ISSOCK(statbuf.st_mode)) {
-            struct ch_span span;
-            span.Ptr = buffer;
-            span.Len = sent_size;
-            pid_t thread_id = syscall(__NR_gettid);
             on_send_func(thread_id, socketFD, span, 0);
+        } else {
+            on_write_func(thread_id, socketFD, span);
         }
     }
     return sent_size;
@@ -150,7 +183,7 @@ ssize_t recv (int socketFD, void *buffer, size_t size, int flags) {
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = received_size;
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_recv_func(thread_id, socketFD, span, flags);
     }
     return received_size;
@@ -166,7 +199,7 @@ ssize_t read (int socketFD, void *buffer, size_t size) {
             struct ch_span span;
             span.Ptr = buffer;
             span.Len = received_size;
-            pid_t thread_id = syscall(__NR_gettid);
+            pid_t thread_id = get_thread_id();
             on_recv_func(thread_id, socketFD, span, 0);
         }
     }
@@ -181,7 +214,7 @@ ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = buffer_size;
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_sendto_func(thread_id, socketFD, span, flags, typed_addr);
     }
     return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
@@ -191,7 +224,7 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
     HOOK_SYS_FUNC( connect );
     if (on_connect_func != NULL && remote_addr != NULL && remote_addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_remote_addr = (struct sockaddr_in *)(remote_addr);
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_connect_func(thread_id, socketFD, typed_remote_addr);
     }
     return orig_connect_func(socketFD, remote_addr, remote_addr_len);
@@ -203,8 +236,78 @@ int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
     load_koala_so();
     if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL && addr->sa_family == AF_INET) {
         struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
-        pid_t thread_id = syscall(__NR_gettid);
+        pid_t thread_id = get_thread_id();
         on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
     }
     return clientSocketFD;
+}
+
+FILE * fopen(const char *filename, const char *opentype) {
+    HOOK_SYS_FUNC( fopen );
+    if (on_fopened_file_func == NULL) {
+        return orig_fopen_func(filename, opentype);
+    }
+    pid_t thread_id = get_thread_id();
+    struct ch_span filename_span;
+    filename_span.Ptr = filename;
+    filename_span.Len = strlen(filename);
+    struct ch_span opentype_span;
+    opentype_span.Ptr = opentype;
+    opentype_span.Len = strlen(opentype);
+    FILE *file = orig_fopen_func(filename, opentype);
+    if (file != NULL) {
+        on_fopened_file_func(thread_id, fileno(file), filename_span, opentype_span);
+    }
+    return file;
+}
+
+FILE * fopen64(const char *filename, const char *opentype) {
+    HOOK_SYS_FUNC( fopen64 );
+    if (on_fopened_file_func == NULL) {
+        return orig_fopen64_func(filename, opentype);
+    }
+    pid_t thread_id = get_thread_id();
+    struct ch_span filename_span;
+    filename_span.Ptr = filename;
+    filename_span.Len = strlen(filename);
+    struct ch_span opentype_span;
+    opentype_span.Ptr = opentype;
+    opentype_span.Len = strlen(opentype);
+    FILE *file = orig_fopen64_func(filename, opentype);
+    if (file != NULL) {
+        on_fopened_file_func(thread_id, fileno(file), filename_span, opentype_span);
+    }
+    return file;
+}
+
+int open(const char *filename, int flags, mode_t mode) {
+    HOOK_SYS_FUNC( open );
+    if (on_opened_file_func == NULL) {
+        return orig_open_func(filename, flags, mode);
+    }
+    pid_t thread_id = get_thread_id();
+    struct ch_span filename_span;
+    filename_span.Ptr = filename;
+    filename_span.Len = strlen(filename);
+    int file = orig_open_func(filename, flags, mode);
+    if (file != -1) {
+        on_opened_file_func(thread_id, file, filename_span, flags, mode);
+    }
+    return file;
+}
+
+int open64(const char *filename, int flags, mode_t mode) {
+    HOOK_SYS_FUNC( open64 );
+    if (on_opened_file_func == NULL) {
+        return orig_open64_func(filename, flags, mode);
+    }
+    pid_t thread_id = get_thread_id();
+    struct ch_span filename_span;
+    filename_span.Ptr = filename;
+    filename_span.Len = strlen(filename);
+    int file = orig_open64_func(filename, flags, mode);
+    if (file != -1) {
+        on_opened_file_func(thread_id, file, filename_span, flags, mode);
+    }
+    return file;
 }
