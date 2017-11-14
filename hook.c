@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <math.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
@@ -62,11 +63,20 @@ static open64_pfn_t orig_open64_func;
 typedef void (*on_connect_pfn_t)(pid_t p0, int p1, struct sockaddr_in* p2);
 static on_connect_pfn_t on_connect_func;
 
+typedef void (*on_connect_unix_pfn_t)(pid_t p0, int p1, char* p2);
+static on_connect_unix_pfn_t on_connect_unix_func;
+
 typedef void (*on_bind_pfn_t)(pid_t p0, int p1, struct sockaddr_in* p2);
 static on_bind_pfn_t on_bind_func;
 
+typedef void (*on_bind_unix_pfn_t)(pid_t p0, int p1, char* p2);
+static on_bind_unix_pfn_t on_bind_unix_func;
+
 typedef void (*on_accept_pfn_t)(pid_t p0, int p1, int p2, struct sockaddr_in* p3);
 static on_accept_pfn_t on_accept_func;
+
+typedef void (*on_accept_unix_pfn_t)(pid_t p0, int p1, int p2, char* p3);
+static on_accept_unix_pfn_t on_accept_unix_func;
 
 typedef void (*on_send_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
 static on_send_pfn_t on_send_func;
@@ -92,8 +102,11 @@ void hook_init (void) __attribute__ ((constructor));
 void hook_init() {
     koala_so_handle = NULL;
     on_connect_func = NULL;
+    on_connect_unix_func = NULL;
     on_bind_func = NULL;
+    on_bind_unix_func = NULL;
     on_accept_func = NULL;
+    on_accept_unix_func = NULL;
     on_send_func = NULL;
     on_recv_func = NULL;
     on_sendto_func = NULL;
@@ -123,8 +136,11 @@ static void load_koala_so() {
         return;
     }
     on_accept_func = (on_accept_pfn_t) dlsym(koala_so_handle, "on_accept");
+    on_accept_unix_func = (on_accept_unix_pfn_t) dlsym(koala_so_handle, "on_accept_unix");
     on_connect_func = (on_connect_pfn_t) dlsym(koala_so_handle, "on_connect");
+    on_connect_unix_func = (on_connect_unix_pfn_t) dlsym(koala_so_handle, "on_connect_unix");
     on_bind_func = (on_bind_pfn_t) dlsym(koala_so_handle, "on_bind");
+    on_bind_unix_func = (on_bind_unix_pfn_t) dlsym(koala_so_handle, "on_bind_unix");
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
@@ -136,10 +152,21 @@ static void load_koala_so() {
 int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
     HOOK_SYS_FUNC( bind );
     int errno = orig_bind_func(socketFD,addr, length);
-    if (on_bind_func != NULL && errno == 0 && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+    int sslen = sizeof(struct sockaddr_un);
+    struct sockaddr_un ss, *un;
+    if (on_bind_func != NULL && errno == 0 && addr != NULL) {
         pid_t thread_id = get_thread_id();
-        on_bind_func(thread_id, socketFD, typed_addr);
+        switch (addr->sa_family) {
+            case AF_INET:
+                on_bind_func(thread_id, socketFD, (struct sockaddr_in *)(addr));
+                break;
+            case AF_UNIX:
+                if (getsockname(socketFD, (struct sockaddr *)&ss, &sslen) == 0) {
+                    un = (struct sockaddr_un *)&ss;
+                }
+                on_bind_unix_func(thread_id, socketFD, un->sun_path);
+                break;
+        }
     }
     return errno;
 }
@@ -210,22 +237,32 @@ ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
                const struct sockaddr *addr, socklen_t addr_size) {
     HOOK_SYS_FUNC( sendto );
     if (on_sendto_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = buffer_size;
         pid_t thread_id = get_thread_id();
-        on_sendto_func(thread_id, socketFD, span, flags, typed_addr);
+        on_sendto_func(thread_id, socketFD, span, flags, (struct sockaddr_in *)(addr));
     }
     return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
 }
 
 int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_addr_len) {
     HOOK_SYS_FUNC( connect );
-    if (on_connect_func != NULL && remote_addr != NULL && remote_addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_remote_addr = (struct sockaddr_in *)(remote_addr);
+    int sslen = sizeof(struct sockaddr_un);
+    struct sockaddr_un ss, *un;
+    if (on_connect_func != NULL && remote_addr != NULL) {
         pid_t thread_id = get_thread_id();
-        on_connect_func(thread_id, socketFD, typed_remote_addr);
+        switch (remote_addr->sa_family) {
+            case AF_INET:
+                on_connect_func(thread_id, socketFD, (struct sockaddr_in *)(remote_addr));
+                break;
+            case AF_UNIX:
+                if (getsockname(socketFD, (struct sockaddr *)&ss, &sslen) == 0) {
+                    un = (struct sockaddr_un *)&ss;
+                }
+                on_connect_unix_func(thread_id, socketFD, un->sun_path);
+                break;
+        }
     }
     return orig_connect_func(socketFD, remote_addr, remote_addr_len);
 }
@@ -233,11 +270,22 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
 int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
     HOOK_SYS_FUNC( accept );
     int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
+    int sslen = sizeof(struct sockaddr_un);
+    struct sockaddr_un ss, *un;
     load_koala_so();
-    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL && addr->sa_family == AF_INET) {
-        struct sockaddr_in *typed_addr = (struct sockaddr_in *)(addr);
+    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL) {
         pid_t thread_id = get_thread_id();
-        on_accept_func(thread_id, serverSocketFD, clientSocketFD, typed_addr);
+        switch (addr->sa_family) {
+            case AF_INET:
+                on_accept_func(thread_id, serverSocketFD, clientSocketFD, (struct sockaddr_in *)(addr));
+                break;
+            case AF_UNIX:
+                if (getsockname(serverSocketFD, (struct sockaddr *)&ss, &sslen) == 0) {
+                    un = (struct sockaddr_un *)&ss;
+                }
+                on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
+                break;
+        }
     }
     return clientSocketFD;
 }
