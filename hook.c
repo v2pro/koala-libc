@@ -18,7 +18,7 @@
 #include <sys/stat.h>
 #include "span.h"
 
-char* library_version = { "KOALA-LIBC-VERSION: 1.1.0" };
+char* library_version = { "KOALA-LIBC-VERSION: 1.2.0" };
 
 #define RTLD_NEXT	((void *) -1l)
 
@@ -29,6 +29,9 @@ static send_pfn_t orig_send_func;
 
 typedef ssize_t (*write_pfn_t)(int, const void *, size_t);
 static write_pfn_t orig_write_func;
+
+typedef ssize_t (*writev_pfn_t)(int, const struct iovec *, int);
+static writev_pfn_t orig_writev_func;
 
 typedef ssize_t (*recv_pfn_t)(int socket, void *, size_t, int);
 static recv_pfn_t orig_recv_func;
@@ -44,6 +47,9 @@ static connect_pfn_t orig_connect_func;
 
 typedef int (*accept_pfn_t)(int, struct sockaddr *, socklen_t *);
 static accept_pfn_t orig_accept_func;
+
+typedef int (*accept4_pfn_t)(int, struct sockaddr *, socklen_t *, int);
+static accept4_pfn_t orig_accept4_func;
 
 typedef int (*bind_pfn_t)(int, const struct sockaddr *, socklen_t);
 static bind_pfn_t orig_bind_func;
@@ -78,7 +84,7 @@ static on_accept_pfn_t on_accept_func;
 typedef void (*on_accept_unix_pfn_t)(pid_t p0, int p1, int p2, char* p3);
 static on_accept_unix_pfn_t on_accept_unix_func;
 
-typedef void (*on_send_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
+typedef void (*on_send_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, int p4);
 static on_send_pfn_t on_send_func;
 
 typedef void (*on_recv_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
@@ -179,7 +185,48 @@ ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
         span.Ptr = buffer;
         span.Len = sent_size;
         pid_t thread_id = get_thread_id();
-        on_send_func(thread_id, socketFD, span, flags);
+        on_send_func(thread_id, socketFD, span, flags, 0);
+    }
+    return sent_size;
+}
+
+ssize_t writev(int socketFD, const struct iovec *iov, int iovcnt) {
+    HOOK_SYS_FUNC( writev );
+    ssize_t sent_size = orig_writev_func(socketFD, iov, iovcnt);
+    if (on_send_func != NULL && on_write_func != NULL && sent_size >= 0) {
+        struct stat statbuf;
+        fstat(socketFD, &statbuf);
+        pid_t thread_id = get_thread_id();
+        ssize_t remaining_size = sent_size;
+        if (S_ISSOCK(statbuf.st_mode)) {
+            for (int i = 0; i < iovcnt; i++) {
+                struct ch_span span;
+                span.Ptr = iov[i].iov_base;
+                span.Len = iov[i].iov_len;
+                if (remaining_size < iov[i].iov_len) {
+                    span.Len = remaining_size;
+                }
+                remaining_size -= span.Len;
+                on_send_func(thread_id, socketFD, span, 0, 0);
+                if (remaining_size <= 0) {
+                    break;
+                }
+            }
+        } else {
+            for (int i = 0; i < iovcnt; i++) {
+                struct ch_span span;
+                span.Ptr = iov[i].iov_base;
+                span.Len = iov[i].iov_len;
+                if (remaining_size < iov[i].iov_len) {
+                    span.Len = remaining_size;
+                }
+                remaining_size -= span.Len;
+                on_write_func(thread_id, socketFD, span);
+                if (remaining_size <= 0) {
+                    break;
+                }
+            }
+        }
     }
     return sent_size;
 }
@@ -195,7 +242,7 @@ ssize_t write(int socketFD, const void *buffer, size_t size) {
         span.Len = sent_size;
         pid_t thread_id = get_thread_id();
         if (S_ISSOCK(statbuf.st_mode)) {
-            on_send_func(thread_id, socketFD, span, 0);
+            on_send_func(thread_id, socketFD, span, 0, 0);
         } else {
             on_write_func(thread_id, socketFD, span);
         }
@@ -265,6 +312,29 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
         }
     }
     return orig_connect_func(socketFD, remote_addr, remote_addr_len);
+}
+
+int accept4(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+    HOOK_SYS_FUNC( accept4 );
+    int clientSocketFD = orig_accept4_func(serverSocketFD, addr, addrlen, flags);
+    int sslen = sizeof(struct sockaddr_un);
+    struct sockaddr_un ss, *un;
+    load_koala_so();
+    if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL) {
+        pid_t thread_id = get_thread_id();
+        switch (addr->sa_family) {
+            case AF_INET:
+                on_accept_func(thread_id, serverSocketFD, clientSocketFD, (struct sockaddr_in *)(addr));
+                break;
+            case AF_UNIX:
+                if (getsockname(serverSocketFD, (struct sockaddr *)&ss, &sslen) == 0) {
+                    un = (struct sockaddr_un *)&ss;
+                }
+                on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
+                break;
+        }
+    }
+    return clientSocketFD;
 }
 
 int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
