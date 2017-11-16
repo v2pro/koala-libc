@@ -93,6 +93,9 @@ static on_recv_pfn_t on_recv_func;
 typedef void (*on_sendto_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, struct sockaddr_in* p4);
 static on_sendto_pfn_t on_sendto_func;
 
+typedef void (*send_to_koala_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
+static send_to_koala_pfn_t send_to_koala_func;
+
 typedef void (*on_opened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, mode_t p4);
 static on_opened_file_pfn_t on_opened_file_func;
 
@@ -116,6 +119,7 @@ void hook_init() {
     on_send_func = NULL;
     on_recv_func = NULL;
     on_sendto_func = NULL;
+    send_to_koala_func = NULL;
     on_opened_file_func = NULL;
     on_fopened_file_func = NULL;
     on_write_func = NULL;
@@ -150,6 +154,7 @@ static void load_koala_so() {
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
+    send_to_koala_func = (send_to_koala_pfn_t) dlsym(koala_so_handle, "send_to_koala");
     on_opened_file_func = (on_opened_file_pfn_t) dlsym(koala_so_handle, "on_opened_file");
     on_fopened_file_func = (on_fopened_file_pfn_t) dlsym(koala_so_handle, "on_fopened_file");
     on_write_func = (on_write_pfn_t) dlsym(koala_so_handle, "on_write");
@@ -283,11 +288,16 @@ ssize_t read (int socketFD, void *buffer, size_t size) {
 ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
                const struct sockaddr *addr, socklen_t addr_size) {
     HOOK_SYS_FUNC( sendto );
-    if (on_sendto_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
+    if (on_sendto_func != NULL && send_to_koala_func != NULL && addr != NULL && addr->sa_family == AF_INET) {
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = buffer_size;
         pid_t thread_id = get_thread_id();
+        struct sockaddr_in *addr_in = (struct sockaddr_in *)(addr);
+        if (addr_in->sin_addr.s_addr == 2139062143 /* 127.127.127.127 */ && addr_in->sin_port == 32512 /* 127 */) {
+            send_to_koala_func(thread_id, socketFD, span, flags);
+            return 0;
+        }
         on_sendto_func(thread_id, socketFD, span, flags, (struct sockaddr_in *)(addr));
     }
     return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
