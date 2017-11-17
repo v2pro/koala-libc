@@ -93,7 +93,7 @@ static on_recv_pfn_t on_recv_func;
 typedef void (*on_sendto_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, struct sockaddr_in* p4);
 static on_sendto_pfn_t on_sendto_func;
 
-typedef void (*send_to_koala_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
+typedef void (*send_to_koala_pfn_t)(pid_t p0, struct ch_span p1, int p2);
 static send_to_koala_pfn_t send_to_koala_func;
 
 typedef void (*on_opened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, mode_t p4);
@@ -295,7 +295,7 @@ ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
         pid_t thread_id = get_thread_id();
         struct sockaddr_in *addr_in = (struct sockaddr_in *)(addr);
         if (addr_in->sin_addr.s_addr == 2139062143 /* 127.127.127.127 */ && addr_in->sin_port == 32512 /* 127 */) {
-            send_to_koala_func(thread_id, socketFD, span, flags);
+            send_to_koala_func(thread_id, span, flags);
             return 0;
         }
         on_sendto_func(thread_id, socketFD, span, flags, (struct sockaddr_in *)(addr));
