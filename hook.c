@@ -16,9 +16,11 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
+#include "allocated_string.h"
 #include "span.h"
+#include "countlog.h"
 
-char* library_version = { "KOALA-LIBC-VERSION: 1.2.0" };
+char* library_version = { "KOALA-LIBC-VERSION: 1.3.0" };
 
 #define RTLD_NEXT	((void *) -1l)
 
@@ -84,10 +86,13 @@ static on_accept_pfn_t on_accept_func;
 typedef void (*on_accept_unix_pfn_t)(pid_t p0, int p1, int p2, char* p3);
 static on_accept_unix_pfn_t on_accept_unix_func;
 
+typedef struct ch_allocated_string (*before_send_pfn_t)(pid_t p0, int p1, int p2, size_t *p3);
+static before_send_pfn_t before_send_func;
+
 typedef void (*on_send_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, int p4);
 static on_send_pfn_t on_send_func;
 
-typedef void (*on_recv_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
+typedef struct ch_span (*on_recv_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
 static on_recv_pfn_t on_recv_func;
 
 typedef void (*on_sendto_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, struct sockaddr_in* p4);
@@ -105,6 +110,9 @@ static on_fopened_file_pfn_t on_fopened_file_func;
 typedef void (*on_write_pfn_t)(pid_t p0, int p1, struct ch_span p2);
 static on_write_pfn_t on_write_func;
 
+typedef int (*is_tracing_pfn_t)();
+static is_tracing_pfn_t is_tracing_func;
+
 static void *koala_so_handle;
 
 void hook_init (void) __attribute__ ((constructor));
@@ -116,6 +124,7 @@ void hook_init() {
     on_bind_unix_func = NULL;
     on_accept_func = NULL;
     on_accept_unix_func = NULL;
+    before_send_func = NULL;
     on_send_func = NULL;
     on_recv_func = NULL;
     on_sendto_func = NULL;
@@ -123,10 +132,7 @@ void hook_init() {
     on_opened_file_func = NULL;
     on_fopened_file_func = NULL;
     on_write_func = NULL;
-}
-
-pid_t get_thread_id() {
-    return syscall(__NR_gettid);
+    is_tracing_func = NULL;
 }
 
 static void load_koala_so() {
@@ -145,12 +151,14 @@ static void load_koala_so() {
         fflush(stderr);
         return;
     }
+    load_koala_so_countlog(koala_so_handle);
     on_accept_func = (on_accept_pfn_t) dlsym(koala_so_handle, "on_accept");
     on_accept_unix_func = (on_accept_unix_pfn_t) dlsym(koala_so_handle, "on_accept_unix");
     on_connect_func = (on_connect_pfn_t) dlsym(koala_so_handle, "on_connect");
     on_connect_unix_func = (on_connect_unix_pfn_t) dlsym(koala_so_handle, "on_connect_unix");
     on_bind_func = (on_bind_pfn_t) dlsym(koala_so_handle, "on_bind");
     on_bind_unix_func = (on_bind_unix_pfn_t) dlsym(koala_so_handle, "on_bind_unix");
+    before_send_func = (before_send_pfn_t) dlsym(koala_so_handle, "before_send");
     on_send_func = (on_send_pfn_t) dlsym(koala_so_handle, "on_send");
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
@@ -158,6 +166,14 @@ static void load_koala_so() {
     on_opened_file_func = (on_opened_file_pfn_t) dlsym(koala_so_handle, "on_opened_file");
     on_fopened_file_func = (on_fopened_file_pfn_t) dlsym(koala_so_handle, "on_fopened_file");
     on_write_func = (on_write_pfn_t) dlsym(koala_so_handle, "on_write");
+    is_tracing_func = (is_tracing_pfn_t) dlsym(koala_so_handle, "is_tracing");
+}
+
+int is_tracing() {
+    if (is_tracing_func == NULL) {
+        return 0;
+    }
+    return is_tracing_func();
 }
 
 int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
@@ -195,43 +211,140 @@ ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
     return sent_size;
 }
 
+static void writev_call_on_write(int socketFD, const struct iovec *iov, int iovcnt, ssize_t sent_size) {
+    ssize_t remaining_size = sent_size;
+    pid_t thread_id = get_thread_id();
+    for (int i = 0; i < iovcnt; i++) {
+        struct ch_span span;
+        span.Ptr = iov[i].iov_base;
+        span.Len = iov[i].iov_len;
+        if (remaining_size < iov[i].iov_len) {
+            span.Len = remaining_size;
+        }
+        remaining_size -= span.Len;
+        on_write_func(thread_id, socketFD, span);
+        // len(span) == 0 should trigger the callback
+        // so this check should be after on_write_func
+        if (remaining_size <= 0) {
+            break;
+        }
+    }
+}
+
+static void writev_call_on_send(int socketFD, const struct iovec *iov, int iovcnt, ssize_t sent_size) {
+    ssize_t remaining_size = sent_size;
+    pid_t thread_id = get_thread_id();
+    for (int i = 0; i < iovcnt; i++) {
+        struct ch_span span;
+        span.Ptr = iov[i].iov_base;
+        span.Len = iov[i].iov_len;
+        if (remaining_size < iov[i].iov_len) {
+            span.Len = remaining_size;
+        }
+        remaining_size -= span.Len;
+        on_send_func(thread_id, socketFD, span, 0, 0);
+        // len(span) == 0 should trigger the callback
+        // so this check should be after on_write_func
+        if (remaining_size <= 0) {
+            break;
+        }
+    }
+}
+
+static ssize_t writev_in_tracing_mode(int socketFD, const struct iovec *iov, int iovcnt) {
+    HOOK_SYS_FUNC( write ); // trace header is written out using write instead of writev
+    pid_t thread_id = get_thread_id();
+    size_t total_to_send_size;
+    for (int i = 0; i < iovcnt; i++) {
+        total_to_send_size += iov[i].iov_len;
+    }
+    struct ch_span span;
+    // before send return the header to be sent, it might be the left over from last time
+    // internally before_send/on_send has a finite-state-machine to handle the callback
+    // might require send less data this time due to previous header sent
+    // so span is passed as pointer
+    size_t orig_total_to_send_size = total_to_send_size;
+    struct ch_allocated_string extra_header = before_send_func(thread_id, socketFD, 0, &total_to_send_size);
+    if (extra_header.Ptr != NULL) {
+        // inject trace header into tcp stream
+        char *remaining_ptr = extra_header.Ptr;
+        size_t remaining_len = extra_header.Len;
+        while (remaining_len > 0) {
+            ssize_t sent_size = orig_write_func(socketFD, remaining_ptr, remaining_len);
+            if (sent_size <= 0) {
+                span.Ptr = NULL;
+                span.Len = 0;
+                // header not fully sent, remaining will be sent out next time 'send' being called
+                on_send_func(thread_id, socketFD, span, 0, extra_header.Len - remaining_len);
+                free(extra_header.Ptr);
+                return sent_size;
+            }
+            remaining_ptr += sent_size;
+            remaining_len -= sent_size;
+        }
+        free(extra_header.Ptr);
+    }
+    ssize_t sent_size;
+    if (total_to_send_size < orig_total_to_send_size) {
+        // limit the body size, as instructed by before_send
+        struct iovec *shrink_iov = malloc(iovcnt * sizeof(struct iovec));
+        memcpy(shrink_iov, iov, iovcnt * sizeof(struct iovec));
+        for (int i = 0; i < iovcnt; i++) {
+            if (shrink_iov[i].iov_len > total_to_send_size) {
+                shrink_iov[i].iov_len = total_to_send_size;
+                iovcnt = i + 1;
+                break;
+            }
+            total_to_send_size -= shrink_iov[i].iov_len;
+        }
+        sent_size = orig_writev_func(socketFD, shrink_iov, iovcnt);
+        free(shrink_iov);
+    } else {
+        // send out the body, without shrinking
+        sent_size = orig_writev_func(socketFD, iov, iovcnt);
+    }
+    ssize_t remaining_size = sent_size;
+    for (int i = 0; i < iovcnt; i++) {
+        span.Ptr = iov[i].iov_base;
+        span.Len = iov[i].iov_len;
+        if (remaining_size < iov[i].iov_len) {
+            span.Len = remaining_size;
+        }
+        remaining_size -= span.Len;
+        if (i == 0) {
+            on_send_func(thread_id, socketFD, span, 0, extra_header.Len);
+        } else {
+            on_send_func(thread_id, socketFD, span, 0, 0);
+        }
+        // len(span) == 0 should trigger the callback
+        // so this check should be after on_write_func
+        if (remaining_size <= 0) {
+            break;
+        }
+    }
+    return sent_size;
+}
+
 ssize_t writev(int socketFD, const struct iovec *iov, int iovcnt) {
     HOOK_SYS_FUNC( writev );
-    ssize_t sent_size = orig_writev_func(socketFD, iov, iovcnt);
-    if (on_send_func != NULL && on_write_func != NULL && sent_size >= 0) {
-        struct stat statbuf;
-        fstat(socketFD, &statbuf);
-        pid_t thread_id = get_thread_id();
-        ssize_t remaining_size = sent_size;
-        if (S_ISSOCK(statbuf.st_mode)) {
-            for (int i = 0; i < iovcnt; i++) {
-                struct ch_span span;
-                span.Ptr = iov[i].iov_base;
-                span.Len = iov[i].iov_len;
-                if (remaining_size < iov[i].iov_len) {
-                    span.Len = remaining_size;
-                }
-                remaining_size -= span.Len;
-                on_send_func(thread_id, socketFD, span, 0, 0);
-                if (remaining_size <= 0) {
-                    break;
-                }
-            }
-        } else {
-            for (int i = 0; i < iovcnt; i++) {
-                struct ch_span span;
-                span.Ptr = iov[i].iov_base;
-                span.Len = iov[i].iov_len;
-                if (remaining_size < iov[i].iov_len) {
-                    span.Len = remaining_size;
-                }
-                remaining_size -= span.Len;
-                on_write_func(thread_id, socketFD, span);
-                if (remaining_size <= 0) {
-                    break;
-                }
-            }
+    if (!(on_send_func != NULL && on_write_func != NULL && before_send_func != NULL)) {
+        return orig_writev_func(socketFD, iov, iovcnt);
+    }
+    struct stat statbuf;
+    fstat(socketFD, &statbuf);
+    if (!S_ISSOCK(statbuf.st_mode)) {
+        ssize_t sent_size = orig_writev_func(socketFD, iov, iovcnt);
+        if (sent_size >= 0) {
+            writev_call_on_write(socketFD, iov, iovcnt, sent_size);
         }
+        return sent_size;
+    }
+    if (is_tracing()) {
+        return writev_in_tracing_mode(socketFD, iov, iovcnt);
+    }
+    ssize_t sent_size = orig_writev_func(socketFD, iov, iovcnt);
+    if (sent_size >= 0) {
+        writev_call_on_send(socketFD, iov, iovcnt, sent_size);
     }
     return sent_size;
 }
@@ -258,31 +371,68 @@ ssize_t write(int socketFD, const void *buffer, size_t size) {
 ssize_t recv (int socketFD, void *buffer, size_t size, int flags) {
     HOOK_SYS_FUNC( recv );
     ssize_t received_size = orig_recv_func(socketFD, buffer, size, flags);
-    if (on_recv_func != NULL && received_size >= 0) {
+    if (!(on_recv_func != NULL && received_size >= 0)) {
+        return received_size; // not successful
+    }
+    pid_t thread_id = get_thread_id();
+    if (!is_tracing()) { // not in tracing mode
         struct ch_span span;
         span.Ptr = buffer;
         span.Len = received_size;
-        pid_t thread_id = get_thread_id();
         on_recv_func(thread_id, socketFD, span, flags);
+        return received_size;
     }
-    return received_size;
+    // tracing mode
+    for(;;) {
+        if (received_size < 0) {
+            return received_size;
+        }
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = received_size;
+        span = on_recv_func(thread_id, socketFD, span, flags);
+        if (span.Ptr != NULL) {
+            memmove((char *)buffer, span.Ptr, span.Len);
+            return span.Len;
+        }
+        received_size = orig_recv_func(socketFD, buffer, size, flags);
+    }
 }
 
 ssize_t read (int socketFD, void *buffer, size_t size) {
     HOOK_SYS_FUNC( read );
     ssize_t received_size = orig_read_func(socketFD, buffer, size);
-    if (on_recv_func != NULL && received_size >= 0) {
-        struct stat statbuf;
-        fstat(socketFD, &statbuf);
-        if (S_ISSOCK(statbuf.st_mode)) {
-            struct ch_span span;
-            span.Ptr = buffer;
-            span.Len = received_size;
-            pid_t thread_id = get_thread_id();
-            on_recv_func(thread_id, socketFD, span, 0);
-        }
+    if (!(on_recv_func != NULL && received_size >= 0)) {
+        return received_size; // not successful
     }
-    return received_size;
+    struct stat statbuf;
+    fstat(socketFD, &statbuf);
+    if (!S_ISSOCK(statbuf.st_mode)) {
+        return received_size; // not socket
+    }
+    pid_t thread_id = get_thread_id();
+    if (!is_tracing()) { // not in tracing mode
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = received_size;
+        on_recv_func(thread_id, socketFD, span, 0);
+        return received_size;
+    }
+    // tracing mode
+    for(;;) {
+        if (received_size < 0) {
+            return received_size;
+        }
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = received_size;
+        span = on_recv_func(thread_id, socketFD, span, 0);
+        if (span.Ptr != NULL) {
+            memmove((char *)buffer, span.Ptr, span.Len);
+            return span.Len;
+        }
+        received_size = orig_read_func(socketFD, buffer, size);
+    }
 }
 
 ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
