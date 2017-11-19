@@ -198,16 +198,64 @@ int bind (int socketFD, const struct sockaddr *addr, socklen_t length) {
     return errno;
 }
 
-ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
-    HOOK_SYS_FUNC( send );
+ssize_t send_in_tracing_mode(int socketFD, const void *buffer, size_t size, int flags) {
+    pid_t thread_id = get_thread_id();
+    struct ch_span span;
+    // before send return the header to be sent, it might be the left over from last time
+    // internally before_send/on_send has a finite-state-machine to handle the callback
+    // might require send less data this time due to previous header sent
+    // so size is passed as pointer
+    struct ch_allocated_string extra_header = before_send_func(thread_id, socketFD, flags, &size);
+    if (extra_header.Ptr != NULL) {
+        // inject trace header into tcp stream
+        char *remaining_ptr = extra_header.Ptr;
+        size_t remaining_len = extra_header.Len;
+        while (remaining_len > 0) {
+            ssize_t sent_size = orig_send_func(socketFD, remaining_ptr, remaining_len, flags);
+            if (sent_size <= 0) {
+                span.Ptr = NULL;
+                span.Len = 0;
+                // header not fully sent, remaining will be sent out next time 'send' being called
+                on_send_func(thread_id, socketFD, span, flags, extra_header.Len - remaining_len);
+                free(extra_header.Ptr);
+                return sent_size;
+            }
+            remaining_ptr += sent_size;
+            remaining_len -= sent_size;
+        }
+        free(extra_header.Ptr);
+    }
+    // send out the body
     ssize_t sent_size = orig_send_func(socketFD, buffer, size, flags);
-    if (on_send_func != NULL && sent_size >= 0) {
-        struct ch_span span;
+    if (sent_size >= 0) {
         span.Ptr = buffer;
         span.Len = sent_size;
-        pid_t thread_id = get_thread_id();
-        on_send_func(thread_id, socketFD, span, flags, 0);
+    } else {
+        span.Ptr = NULL;
+        span.Len = 0;
     }
+    // header fully sent, body might be partially sent
+    on_send_func(thread_id, socketFD, span, flags, extra_header.Len);
+    return sent_size;
+}
+
+ssize_t send(int socketFD, const void *buffer, size_t size, int flags) {
+    HOOK_SYS_FUNC( send );
+    if (!(on_send_func != NULL && before_send_func != NULL)) {
+        return orig_send_func(socketFD, buffer, size, flags);
+    }
+    if (is_tracing()) {
+        return send_in_tracing_mode(socketFD, buffer, size, flags);
+    }
+    ssize_t sent_size = orig_send_func(socketFD, buffer, size, flags);
+    if (sent_size < 0) {
+        return sent_size;
+    }
+    struct ch_span span;
+    span.Ptr = buffer;
+    span.Len = sent_size;
+    pid_t thread_id = get_thread_id();
+    on_send_func(thread_id, socketFD, span, flags, 0);
     return sent_size;
 }
 

@@ -20,10 +20,10 @@ struct event_arg cl_ulong(unsigned long val) {
     return _;
 }
 
-typedef void (*countlog0_pfn_t)(int, struct ch_span);
+typedef void (*countlog0_pfn_t)(pid_t, int, struct ch_span);
 static countlog0_pfn_t countlog0_func = NULL;
 
-typedef void (*countlog1_pfn_t)(int, struct ch_span, struct ch_span, struct event_arg);
+typedef void (*countlog1_pfn_t)(pid_t, int, struct ch_span, struct ch_span, struct event_arg);
 static countlog1_pfn_t countlog1_func = NULL;
 
 void load_koala_so_countlog(void *koala_so_handle) {
@@ -31,7 +31,7 @@ void load_koala_so_countlog(void *koala_so_handle) {
     countlog1_func = (countlog1_pfn_t) dlsym(koala_so_handle, "countlog1");
 }
 
-static __thread pid_t _thread_id;
+static __thread pid_t _thread_id = 0;
 
 static pid_t get_thread_id() {
     if (_thread_id == 0) {
@@ -47,7 +47,7 @@ static void countlog0(enum event_level level, const char *event) {
     struct ch_span event_span;
     event_span.Ptr = event;
     event_span.Len = strlen(event);
-    countlog0_func(level, event_span);
+    countlog0_func(get_thread_id(), level, event_span);
 }
 
 static void countlog1(enum event_level level, const char *event, const char *k1, struct event_arg v1) {
@@ -60,7 +60,7 @@ static void countlog1(enum event_level level, const char *event, const char *k1,
     struct ch_span k1_span;
     k1_span.Ptr = k1;
     k1_span.Len = strlen(k1);
-    countlog1_func(level, event_span, k1_span, v1);
+    countlog1_func(get_thread_id(), level, event_span, k1_span, v1);
 }
 
 #endif
