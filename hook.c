@@ -27,112 +27,103 @@ char* library_version = { "KOALA-LIBC-VERSION: 1.3.0" };
 #define HOOK_SYS_FUNC(name) if( !orig_##name##_func ) { orig_##name##_func = (name##_pfn_t)dlsym(RTLD_NEXT,#name); }
 
 typedef ssize_t (*send_pfn_t)(int, const void *, size_t, int);
-static send_pfn_t orig_send_func;
+static send_pfn_t orig_send_func = NULL;
 
 typedef ssize_t (*write_pfn_t)(int, const void *, size_t);
-static write_pfn_t orig_write_func;
+static write_pfn_t orig_write_func = NULL;
 
 typedef ssize_t (*writev_pfn_t)(int, const struct iovec *, int);
-static writev_pfn_t orig_writev_func;
+static writev_pfn_t orig_writev_func = NULL;
 
 typedef ssize_t (*recv_pfn_t)(int socket, void *, size_t, int);
-static recv_pfn_t orig_recv_func;
+static recv_pfn_t orig_recv_func = NULL;
 
 typedef ssize_t (*read_pfn_t)(int socket, void *, size_t);
-static read_pfn_t orig_read_func;
+static read_pfn_t orig_read_func = NULL;
 
 typedef ssize_t (*sendto_pfn_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
-static sendto_pfn_t orig_sendto_func;
+static sendto_pfn_t orig_sendto_func = NULL;
+
+typedef ssize_t (*recvfrom_pfn_t)(int, void *, size_t, int, struct sockaddr *, socklen_t *);
+static recvfrom_pfn_t orig_recvfrom_func = NULL;
 
 typedef int (*connect_pfn_t)(int, const struct sockaddr *, socklen_t);
-static connect_pfn_t orig_connect_func;
+static connect_pfn_t orig_connect_func = NULL;
 
 typedef int (*accept_pfn_t)(int, struct sockaddr *, socklen_t *);
-static accept_pfn_t orig_accept_func;
+static accept_pfn_t orig_accept_func = NULL;
 
 typedef int (*accept4_pfn_t)(int, struct sockaddr *, socklen_t *, int);
-static accept4_pfn_t orig_accept4_func;
+static accept4_pfn_t orig_accept4_func = NULL;
 
 typedef int (*bind_pfn_t)(int, const struct sockaddr *, socklen_t);
-static bind_pfn_t orig_bind_func;
+static bind_pfn_t orig_bind_func = NULL;
 
 typedef FILE * (*fopen_pfn_t)(const char *filename, const char *opentype);
-static fopen_pfn_t orig_fopen_func;
+static fopen_pfn_t orig_fopen_func = NULL;
 
 typedef FILE * (*fopen64_pfn_t)(const char *filename, const char *opentype);
-static fopen64_pfn_t orig_fopen64_func;
+static fopen64_pfn_t orig_fopen64_func = NULL;
 
 typedef int (*open_pfn_t)(const char *filename, int flags, mode_t mode);
-static open_pfn_t orig_open_func;
+static open_pfn_t orig_open_func = NULL;
 
 typedef int (*open64_pfn_t)(const char *filename, int flags, mode_t mode);
-static open64_pfn_t orig_open64_func;
+static open64_pfn_t orig_open64_func = NULL;
 
 typedef void (*on_connect_pfn_t)(pid_t p0, int p1, struct sockaddr_in* p2);
-static on_connect_pfn_t on_connect_func;
+static on_connect_pfn_t on_connect_func = NULL;
 
 typedef void (*on_connect_unix_pfn_t)(pid_t p0, int p1, char* p2);
-static on_connect_unix_pfn_t on_connect_unix_func;
+static on_connect_unix_pfn_t on_connect_unix_func = NULL;
 
 typedef void (*on_bind_pfn_t)(pid_t p0, int p1, struct sockaddr_in* p2);
-static on_bind_pfn_t on_bind_func;
+static on_bind_pfn_t on_bind_func = NULL;
 
 typedef void (*on_bind_unix_pfn_t)(pid_t p0, int p1, char* p2);
-static on_bind_unix_pfn_t on_bind_unix_func;
+static on_bind_unix_pfn_t on_bind_unix_func = NULL;
 
 typedef void (*on_accept_pfn_t)(pid_t p0, int p1, int p2, struct sockaddr_in* p3);
-static on_accept_pfn_t on_accept_func;
+static on_accept_pfn_t on_accept_func = NULL;
 
 typedef void (*on_accept_unix_pfn_t)(pid_t p0, int p1, int p2, char* p3);
-static on_accept_unix_pfn_t on_accept_unix_func;
+static on_accept_unix_pfn_t on_accept_unix_func = NULL;
 
 typedef struct ch_allocated_string (*before_send_pfn_t)(pid_t p0, int p1, int p2, size_t *p3);
-static before_send_pfn_t before_send_func;
+static before_send_pfn_t before_send_func = NULL;
 
 typedef void (*on_send_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, int p4);
-static on_send_pfn_t on_send_func;
+static on_send_pfn_t on_send_func = NULL;
 
 typedef struct ch_span (*on_recv_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3);
-static on_recv_pfn_t on_recv_func;
+static on_recv_pfn_t on_recv_func = NULL;
 
 typedef void (*on_sendto_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, struct sockaddr_in* p4);
-static on_sendto_pfn_t on_sendto_func;
+static on_sendto_pfn_t on_sendto_func = NULL;
 
 typedef void (*send_to_koala_pfn_t)(pid_t p0, struct ch_span p1, int p2);
-static send_to_koala_pfn_t send_to_koala_func;
+static send_to_koala_pfn_t send_to_koala_func = NULL;
+
+typedef int (*recv_from_koala_pfn_t)(pid_t p0, struct ch_span p1);
+static recv_from_koala_pfn_t recv_from_koala_func = NULL;
 
 typedef void (*on_opened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, int p3, mode_t p4);
-static on_opened_file_pfn_t on_opened_file_func;
+static on_opened_file_pfn_t on_opened_file_func = NULL;
 
 typedef void (*on_fopened_file_pfn_t)(pid_t p0, int p1, struct ch_span p2, struct ch_span p3);
-static on_fopened_file_pfn_t on_fopened_file_func;
+static on_fopened_file_pfn_t on_fopened_file_func = NULL;
 
 typedef void (*on_write_pfn_t)(pid_t p0, int p1, struct ch_span p2);
-static on_write_pfn_t on_write_func;
+static on_write_pfn_t on_write_func = NULL;
 
 typedef int (*is_tracing_pfn_t)();
-static is_tracing_pfn_t is_tracing_func;
+static is_tracing_pfn_t is_tracing_func = NULL;
 
-static void *koala_so_handle;
+static void *koala_so_handle = NULL;
 
 void hook_init (void) __attribute__ ((constructor));
 void hook_init() {
-    koala_so_handle = NULL;
-    on_connect_func = NULL;
-    on_connect_unix_func = NULL;
-    on_bind_func = NULL;
-    on_bind_unix_func = NULL;
-    on_accept_func = NULL;
-    on_accept_unix_func = NULL;
-    before_send_func = NULL;
-    on_send_func = NULL;
-    on_recv_func = NULL;
-    on_sendto_func = NULL;
-    send_to_koala_func = NULL;
-    on_opened_file_func = NULL;
-    on_fopened_file_func = NULL;
-    on_write_func = NULL;
-    is_tracing_func = NULL;
+    // nothing
 }
 
 static void load_koala_so() {
@@ -163,6 +154,7 @@ static void load_koala_so() {
     on_recv_func = (on_recv_pfn_t) dlsym(koala_so_handle, "on_recv");
     on_sendto_func = (on_sendto_pfn_t) dlsym(koala_so_handle, "on_sendto");
     send_to_koala_func = (send_to_koala_pfn_t) dlsym(koala_so_handle, "send_to_koala");
+    recv_from_koala_func = (recv_from_koala_pfn_t) dlsym(koala_so_handle, "recv_from_koala");
     on_opened_file_func = (on_opened_file_pfn_t) dlsym(koala_so_handle, "on_opened_file");
     on_fopened_file_func = (on_fopened_file_pfn_t) dlsym(koala_so_handle, "on_fopened_file");
     on_write_func = (on_write_pfn_t) dlsym(koala_so_handle, "on_write");
@@ -499,6 +491,19 @@ ssize_t sendto(int socketFD, const void *buffer, size_t buffer_size, int flags,
         on_sendto_func(thread_id, socketFD, span, flags, (struct sockaddr_in *)(addr));
     }
     return orig_sendto_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
+}
+
+ssize_t recvfrom(int socketFD, void *buffer, size_t buffer_size, int flags,
+                struct sockaddr *addr, socklen_t *addr_size) {
+    HOOK_SYS_FUNC( recvfrom );
+    if (recv_from_koala_func != NULL && flags == 127127) {
+        struct ch_span span;
+        span.Ptr = buffer;
+        span.Len = buffer_size;
+        pid_t thread_id = get_thread_id();
+        return recv_from_koala_func(thread_id, span);
+    }
+    return orig_recvfrom_func(socketFD, buffer, buffer_size, flags, addr, addr_size);
 }
 
 int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_addr_len) {
