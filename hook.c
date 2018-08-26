@@ -22,7 +22,9 @@
 
 char* library_version = { "KOALA-LIBC-VERSION: 1.3.0" };
 
-#define RTLD_NEXT	((void *) -1l)
+#ifndef RTLD_NEXT
+#  define RTLD_NEXT	((void *) -1l)
+#endif
 
 #define HOOK_SYS_FUNC(name) if( !orig_##name##_func ) { orig_##name##_func = (name##_pfn_t)dlsym(RTLD_NEXT,#name); }
 
@@ -530,11 +532,11 @@ int connect(int socketFD, const struct sockaddr *remote_addr, socklen_t remote_a
 int accept4(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen, int flags) {
     HOOK_SYS_FUNC( accept4 );
     int clientSocketFD = orig_accept4_func(serverSocketFD, addr, addrlen, flags);
-    int sslen = sizeof(struct sockaddr_un);
-    struct sockaddr_un ss, *un;
     load_koala_so();
     if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL) {
         pid_t thread_id = get_thread_id();
+        int sslen = sizeof(struct sockaddr_un);
+        struct sockaddr_un ss, *un;
         switch (addr->sa_family) {
             case AF_INET:
                 on_accept_func(thread_id, serverSocketFD, clientSocketFD, (struct sockaddr_in *)(addr));
@@ -542,8 +544,10 @@ int accept4(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen, int f
             case AF_UNIX:
                 if (getsockname(serverSocketFD, (struct sockaddr *)&ss, &sslen) == 0) {
                     un = (struct sockaddr_un *)&ss;
+                    on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
                 }
-                on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
+                break;
+            default:
                 break;
         }
     }
@@ -553,11 +557,11 @@ int accept4(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen, int f
 int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
     HOOK_SYS_FUNC( accept );
     int clientSocketFD = orig_accept_func(serverSocketFD, addr, addrlen);
-    int sslen = sizeof(struct sockaddr_un);
-    struct sockaddr_un ss, *un;
     load_koala_so();
     if (on_accept_func != NULL && clientSocketFD > 0 && addr != NULL) {
         pid_t thread_id = get_thread_id();
+        struct sockaddr_un ss, *un;
+        int sslen = sizeof(struct sockaddr_un);
         switch (addr->sa_family) {
             case AF_INET:
                 on_accept_func(thread_id, serverSocketFD, clientSocketFD, (struct sockaddr_in *)(addr));
@@ -565,8 +569,10 @@ int accept(int serverSocketFD, struct sockaddr *addr, socklen_t *addrlen) {
             case AF_UNIX:
                 if (getsockname(serverSocketFD, (struct sockaddr *)&ss, &sslen) == 0) {
                     un = (struct sockaddr_un *)&ss;
+                    on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
                 }
-                on_accept_unix_func(thread_id, serverSocketFD, clientSocketFD, un->sun_path);
+                break;
+            default:
                 break;
         }
     }
