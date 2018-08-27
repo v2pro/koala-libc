@@ -1,6 +1,8 @@
 #ifndef __COUNTLOG_H__
 #define __COUNTLOG_H__
 
+# include <pthread.h>
+
 enum event_level { trace=10, debug=20, info = 30, warn = 40, error = 50, fatal = 60 };
 enum event_arg_type { STRING=1, UNSIGNED_LONG=2 };
 
@@ -35,7 +37,13 @@ static __thread pid_t _thread_id = 0;
 
 static pid_t get_thread_id() {
     if (_thread_id == 0) {
+#ifdef __APPLE__
+        uint64_t tid;
+        pthread_threadid_np(NULL, &tid);
+        _thread_id = (pid_t)tid;
+#else
         _thread_id = syscall(__NR_gettid);
+#endif
     }
     return _thread_id;
 }
